@@ -6,7 +6,7 @@ import time
 
 # --- CONFIG ---
 YOUR_SERVER_IP = "192.168.224.170"
-APP_PORT = 5000
+APP_PORT = 5001
 
 # Thresholds for detection
 THRESHOLDS = {
