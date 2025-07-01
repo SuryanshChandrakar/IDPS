@@ -1131,8 +1131,8 @@ socketio.start_background_task(background_stats_update)
 
 if __name__ == '__main__':
     print("Starting application...")
-    print(f"Admin monitoring available at: http://localhost:5000/admin/monitor")
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
+    print(f"Admin monitoring available at: http://localhost:5010/admin/monitor")
+    socketio.run(app, debug=True, host='0.0.0.0', port=5010)
 
 
 

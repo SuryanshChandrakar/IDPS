@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time DDoS Attack Visualization</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@1.1.2"></script>
+    <script src="https://cdn.socket.io/4.0.1/socket.io.min.js"></script>
+</head>
+<style>
+            body {
+            font-family: 'Roboto', sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f7fa;
+            color: #333;
+        }
+
+        .dashboard {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #2c3e50;
+            margin-bottom: 30px;
+            font-weight: 500;
+        }
+
+        .graph-container {
+            position: relative;
+            height: 500px;
+            margin-bottom: 20px;
+        }
+
+        .legend-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0 20px;
+        }
+
+        #attackLegend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-right: 10px;
+        }
+
+        .legend-color {
+            width: 15px;
+            height: 15px;
+            margin-right: 5px;
+            border-radius: 3px;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        button {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.2s;
+        }
+
+        button:hover {
+            background-color: #2980b9;
+        }
+
+        button:active {
+            background-color: #1a5276;
+        }
+
+        select {
+            padding: 6px 10px;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            background-color: white;
+            font-size: 14px;
+        }
+
+        .time-window {
+            font-size: 14px;
+            color: #555;
+        }
+
+        .threshold-info {
+            font-size: 12px;
+            color: #777;
+            margin-top: 3px;
+        }
+
+        /* Dark mode for the chart */
+        .chartjs-render-monitor {
+            background-color: #2d3748;
+            border-radius: 6px;
+            padding: 10px;
+        }
+
+        .warning-indicator {
+            margin-left: 5px;
+            color: #ff6b6b;
+            font-size: 14px;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+</style>
+<body>
+    <div class="dashboard">
+        <h1>Real-Time DDoS Attack Monitoring</h1>
+        <div class="graph-container">
+            <canvas id="attackGraph"></canvas>
+        </div>
+        <div class="legend-container">
+            <div id="attackLegend"></div>
+            <div class="controls">
+                <button id="pauseBtn">Pause Updates</button>
+                <span class="time-window">
+                    Time Window: 
+                    <select id="timeWindow">
+                        <option value="60">1 minute</option>
+                        <option value="120" selected>2 minutes</option>
+                        <option value="300">5 minutes</option>
+                    </select>
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const ATTACK_TYPES = ['SYN', 'UDP', 'ICMP', 'FRAG', 'TCP', 'Smurf'];
+        const ATTACK_COLORS = {
+            'SYN': 'rgba(255, 99, 132, 0.8)',
+            'UDP': 'rgba(54, 162, 235, 0.8)',
+            'ICMP': 'rgba(255, 206, 86, 0.8)',
+            'FRAG': 'rgba(75, 192, 192, 0.8)',
+            'TCP': 'rgba(153, 102, 255, 0.8)',
+            'Smurf': 'rgba(255, 159, 64, 0.8)'
+        };
+        const THRESHOLD_COLORS = {
+            'SYN': 'rgba(255, 99, 132, 0.5)',
+            'UDP': 'rgba(54, 162, 235, 0.5)',
+            'ICMP': 'rgba(255, 206, 86, 0.5)',
+            'FRAG': 'rgba(75, 192, 192, 0.5)',
+            'TCP': 'rgba(153, 102, 255, 0.5)',
+            'Smurf': 'rgba(255, 159, 64, 0.5)'
+        };
+
+        let chart;
+        let thresholds = {};
+        let isPaused = false;
+        let pointCounter = 0;
+        let lastUpdateTime = 0;
+        const PLOT_INTERVAL = 50; // 50ms between plot updates
+        let lastValues = {
+            SYN: 0, UDP: 0, ICMP: 0, FRAG: 0, TCP: 0, Smurf: 0
+        };
+        let noDataCount = {
+            SYN: 0, UDP: 0, ICMP: 0, FRAG: 0, TCP: 0, Smurf: 0
+        };
+        const NO_DATA_THRESHOLD = 5; // Number of updates without data before dropping to 0
+
+        // Buffer to hold incoming data before plotting
+        const liveDataBuffer = {
+            SYN: [], UDP: [], ICMP: [], FRAG: [], TCP: [], Smurf: []
+        };
+
+        // Socket setup
+        const socket = io("http://localhost:5001", {
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionAttempts: 5
+        });
+
+        socket.on("connect", () => {
+            console.log("Connected to server");
+        });
+
+        socket.on("connect_error", (error) => {
+            console.error("Connection error:", error);
+        });
+
+        socket.on("attack_data", (msg) => {
+            if (msg && msg.type && msg.count !== undefined) {
+                liveDataBuffer[msg.type].push({ x: pointCounter, y: msg.count });
+                lastValues[msg.type] = msg.count;
+                noDataCount[msg.type] = 0; // Reset no-data counter when we get new data
+            }
+        });
+
+        document.addEventListener('DOMContentLoaded', function () {
+            console.log("DOM loaded, initializing chart...");
+            initChart();
+            updateChart();
+        });
+
+        document.getElementById('pauseBtn').addEventListener('click', function () {
+            isPaused = !isPaused;
+            this.textContent = isPaused ? 'Resume Updates' : 'Pause Updates';
+        });
+
+        function initChart() {
+            const ctx = document.getElementById('attackGraph').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: ATTACK_TYPES.map(type => ({
+                        label: `${type} Flood`,
+                        data: [],
+                        borderColor: ATTACK_COLORS[type],
+                        backgroundColor: ATTACK_COLORS[type],
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        pointHitRadius: 8,
+                        cubicInterpolationMode: 'monotone',
+                        tension: 0.4,
+                        fill: false,
+                        spanGaps: false // Ensure no gaps in the line
+                    }))
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: { duration: 0 },
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            display: false,
+                            min: 0,
+                            max: 250
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Packet Count',
+                                color: '#e2e8f0'
+                            },
+                            ticks: {
+                                color: '#e2e8f0'
+                            },
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.1)'
+                            },
+                            beginAtZero: true
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            position: 'nearest',
+                            callbacks: {
+                                title: function () { return ''; },
+                                label: function (context) {
+                                    const value = context.parsed.y;
+                                    const type = context.dataset.label;
+                                    return `${type}: ${value} packets`;
+                                }
+                            },
+                            displayColors: true,
+                            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                            titleColor: '#fff',
+                            bodyColor: '#fff',
+                            borderColor: '#777',
+                            borderWidth: 1,
+                            padding: 10
+                        },
+                        annotation: { annotations: [] }
+                    },
+                    interaction: {
+                        mode: 'nearest',
+                        axis: 'x',
+                        intersect: false
+                    }
+                }
+            });
+            updateLegend();
+        }
+
+        function updateChart() {
+            if (isPaused) {
+                requestAnimationFrame(updateChart);
+                return;
+            }
+
+            const currentTime = performance.now();
+            const timeSinceLastUpdate = currentTime - lastUpdateTime;
+
+            if (timeSinceLastUpdate >= PLOT_INTERVAL) {
+                try {
+                    let dataUpdated = false;
+                    
+                    ATTACK_TYPES.forEach(type => {
+                        const dataset = chart.data.datasets.find(ds => ds.label.startsWith(type));
+                        const buffer = liveDataBuffer[type];
+
+                        if (!dataset) {
+                            console.error(`Dataset not found for type: ${type}`);
+                            return;
+                        }
+
+                        // Process up to 5 points per update for smooth animation
+                        const pointsToProcess = Math.min(5, buffer.length);
+                        if (pointsToProcess > 0) {
+                            for (let i = 0; i < pointsToProcess; i++) {
+                                const point = buffer.shift();
+                                dataset.data.push({ x: pointCounter, y: point.y });
+                                lastValues[type] = point.y;
+                            }
+                            noDataCount[type] = 0; // Reset counter when we get new data
+                            dataUpdated = true;
+                        } else {
+                            // If no new data, increment the no-data counter
+                            noDataCount[type]++;
+                            
+                            // If we haven't received data for a while, drop to 0
+                            if (noDataCount[type] >= NO_DATA_THRESHOLD) {
+                                dataset.data.push({ x: pointCounter, y: 0 });
+                                lastValues[type] = 0;
+                            } else {
+                                // Otherwise maintain the last value
+                                dataset.data.push({ x: pointCounter, y: lastValues[type] });
+                            }
+                            dataUpdated = true;
+                        }
+
+                        // Keep only last 250 points for better performance
+                        if (dataset.data.length > 250) {
+                            dataset.data = dataset.data.slice(-250);
+                        }
+
+                        updateThresholdAnnotation(type, dataset.data);
+                    });
+
+                    if (dataUpdated) {
+                        updateYAxisScale();
+                        chart.options.scales.x.min = pointCounter - 250;
+                        chart.options.scales.x.max = pointCounter;
+                        chart.update('none'); // Use 'none' mode for better performance
+                        pointCounter++;
+                        lastUpdateTime = currentTime;
+                    }
+                } catch (error) {
+                    console.error("Error updating chart:", error);
+                }
+            }
+
+            requestAnimationFrame(updateChart);
+        }
+
+        function updateYAxisScale() {
+            try {
+                let maxValue = 0;
+                chart.data.datasets.forEach(dataset => {
+                    if (dataset.data.length) {
+                        const currentMax = Math.max(...dataset.data.map(point => point.y));
+                        maxValue = Math.max(maxValue, currentMax);
+                    }
+                });
+                chart.options.scales.y.max = Math.ceil(maxValue * 1.1 / 10) * 10;
+            } catch (error) {
+                console.error("Error updating Y axis scale:", error);
+            }
+        }
+
+        function updateThresholdAnnotation(type, dataPoints) {
+            if (!dataPoints.length) return;
+            const latest = dataPoints.reduce((latest, p) => p.x > latest.x ? p : latest, { x: -Infinity, y: 0 });
+            chart.options.plugins.annotation.annotations =
+                chart.options.plugins.annotation.annotations.filter(a => a.id !== `threshold-${type}`);
+            if (latest.y > thresholds[type] * 0.7) {
+                chart.options.plugins.annotation.annotations.push({
+                    id: `threshold-${type}`,
+                    type: 'line',
+                    mode: 'horizontal',
+                    scaleID: 'y',
+                    value: thresholds[type],
+                    borderColor: THRESHOLD_COLORS[type],
+                    borderWidth: 1,
+                    borderDash: [6, 6],
+                    label: {
+                        content: `${type} Threshold: ${thresholds[type]}`,
+                        enabled: true,
+                        position: 'right',
+                        backgroundColor: 'rgba(0,0,0,0.7)',
+                        color: '#fff',
+                        font: { size: 10 }
+                    }
+                });
+            }
+        }
+
+        function updateLegend() {
+            const legendContainer = document.getElementById('attackLegend');
+            legendContainer.innerHTML = '';
+            if (Object.keys(thresholds).length === 0) {
+                thresholds = {
+                    'SYN': 100, 'UDP': 200, 'ICMP': 150, 'FRAG': 20, 'TCP': 100, 'Smurf': 50
+                };
+            }
+            ATTACK_TYPES.forEach(type => {
+                const legendItem = document.createElement('div');
+                legendItem.className = 'legend-item';
+                const colorBox = document.createElement('div');
+                colorBox.className = 'legend-color';
+                colorBox.style.backgroundColor = ATTACK_COLORS[type];
+                const label = document.createElement('span');
+                label.textContent = `${type} Flood`;
+                const thresholdInfo = document.createElement('div');
+                thresholdInfo.className = 'threshold-info';
+                thresholdInfo.textContent = `Threshold: ${thresholds[type]} packets`;
+                thresholdInfo.id = `threshold-info-${type}`;
+                
+                // Add warning indicator
+                const warningIndicator = document.createElement('div');
+                warningIndicator.className = 'warning-indicator';
+                warningIndicator.style.display = 'none';
+                warningIndicator.innerHTML = '⚠️';
+                warningIndicator.id = `warning-${type}`;
+                
+                legendItem.appendChild(colorBox);
+                legendItem.appendChild(label);
+                legendItem.appendChild(thresholdInfo);
+                legendItem.appendChild(warningIndicator);
+                legendContainer.appendChild(legendItem);
+            });
+        }
+
+        // Add CSS for warning indicator
+        const style = document.createElement('style');
+        style.textContent = `
+            .warning-indicator {
+                margin-left: 5px;
+                color: #ff6b6b;
+                font-size: 14px;
+                animation: pulse 1s infinite;
+            }
+            @keyframes pulse {
+                0% { opacity: 1; }
+                50% { opacity: 0.5; }
+                100% { opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
+
+</body>
+</html> 

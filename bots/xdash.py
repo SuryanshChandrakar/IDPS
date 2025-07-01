@@ -7,7 +7,7 @@ import time
 class DashboardBotSpider(scrapy.Spider):
     name = 'dashboard_bot'
     allowed_domains = ['localhost']
-    start_urls = ['http://localhost:5000/login']
+    start_urls = ['http://localhost:5010/login']
     
     def __init__(self, *args, **kwargs):
         super(DashboardBotSpider, self).__init__(*args, **kwargs)
@@ -78,7 +78,7 @@ class DashboardBotSpider(scrapy.Spider):
         # Extract and follow all links
         for href in response.css('a::attr(href)').getall():
             if href.startswith('/'):
-                full_url = f"http://localhost:5000{href}"
+                full_url = f"http://localhost:5010{href}"
                 yield scrapy.Request(
                     url=full_url,
                     callback=self.parse_dashboard,
